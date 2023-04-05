@@ -1,13 +1,12 @@
 import os
-import requests
+import sys
+import time
+import logging
 
 from dotenv import load_dotenv
-import time
+import requests
 import telegram
-import logging
 from http import HTTPStatus
-from exceptions import TokensException
-import sys
 
 
 load_dotenv()
@@ -16,11 +15,15 @@ load_dotenv()
 PRACTICUM_TOKEN = os.getenv('TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('CHAT_ID')
+TOKENS_NAME = {
+    'Практикум': PRACTICUM_TOKEN,
+    'телеграм': TELEGRAM_TOKEN,
+    'chat_id': TELEGRAM_CHAT_ID
+}
 
 RETRY_PERIOD = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
-
 
 HOMEWORK_VERDICTS = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
@@ -35,17 +38,13 @@ logging.basicConfig(level=logging.DEBUG, filename="py_log.log", filemode="w",
 
 def check_tokens():
     """Проверяем, все ли в порядке с токенами."""
-    if PRACTICUM_TOKEN is None:
-        logging.critical('Проблема с токеном Практикума.')
-        raise TokensException
-    elif TELEGRAM_TOKEN is None:
-        logging.critical('Проблема с токеном Телеграма.')
-        raise TokensException
-    elif TELEGRAM_CHAT_ID is None:
-        logging.critical('Проблема с id чата.')
-        raise TokensException
-    else:
+    if all([PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]):
         return True
+    for key, val in TOKENS_NAME.items():
+        if val is None:
+            logging.critical(f'Отсутствует токен {key}')
+    logging.critical('Проблемы с токенами')
+    return False
 
 
 def send_message(bot, message):
@@ -63,56 +62,49 @@ def get_api_answer(timestamp):
     try:
         payload = {'from_date': timestamp}
         response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
-        if response.status_code != HTTPStatus.OK:
-            raise requests.RequestException
-        else:
+        if response.status_code == HTTPStatus.OK:
             response = response.json()
             return response
-    except Exception as error:
-        logging.error(f'Проблемы с запросом. Возможно неправильно'
-                      f'переданы параметры.{error}')
-        raise Exception(f'Проблемы с запросом. Возможно неправильно'
-                        f'переданы параметры. {error}')
+        else:
+            raise Exception
+    except requests.RequestException:
+        raise Exception('Ошибка при обращении к внешнему API')
 
 
 def check_response(response):
     """Проверяем тип данных, полученных из ответа."""
     if not isinstance(response, dict):
-        logging.error('Объект response не словарь')
-        raise TypeError
+        raise TypeError('Объект response не словарь')
     if 'current_date' not in response:
-        logging.error('Нет ключа current_date')
-        raise KeyError
-    elif 'homeworks' not in response:
-        logging.error('Нет ключа homeworks')
-        raise KeyError
+        raise KeyError('Нет ключа current_date')
+    if 'homeworks' not in response:
+        raise KeyError('Нет ключа homeworks')
     else:
         homeworks = response.get('homeworks')
         if not isinstance(homeworks, list):
-            logging.error('Объект homeworks не список')
-            raise TypeError
+            raise TypeError('Объект homeworks не список')
         else:
             return homeworks
 
 
 def parse_status(homework):
     """Извлекаем из ответа сервера нужные данные."""
-    if 'status' not in homework:
-        logging.error('Нет ключа "status" в ответе')
-        raise KeyError
-    elif 'homework_name' not in homework:
-        logging.error('Нет ключа "homework_name" в ответе.')
-        raise KeyError
+    if not isinstance(homework, dict):
+        raise TypeError('Объект homework не словарь')
     else:
-        homework_status = homework['status']
-        if homework_status not in HOMEWORK_VERDICTS:
-            logging.error('Неизвестный статус работы')
-            raise NameError
+        if 'status' not in homework:
+            raise KeyError('Нет ключа "status" в ответе')
+        if 'homework_name' not in homework:
+            raise KeyError('Нет ключа "homework_name" в ответе.')
         else:
-            verdict = HOMEWORK_VERDICTS[homework_status]
-            homework_name = homework['homework_name']
-            return (f'Изменился статус проверки работы "{homework_name}".'
-                    f'{verdict}')
+            homework_status = homework['status']
+            if homework_status not in HOMEWORK_VERDICTS:
+                raise KeyError(f'Неизвестный статус работы {homework_status}')
+            else:
+                verdict = HOMEWORK_VERDICTS[homework_status]
+                homework_name = homework['homework_name']
+                return (f'Изменился статус проверки работы "{homework_name}".'
+                        f'{verdict}')
 
 
 def main():
@@ -123,9 +115,7 @@ def main():
     timestamp = int(time.time())
     while True:
         try:
-            response = requests.get(ENDPOINT, headers=HEADERS,
-                                    params={'from_date': timestamp})
-            response = response.json()
+            response = get_api_answer(timestamp)
             homeworks = check_response(response)
             if homeworks == []:
                 message = 'Статус работы не изменился.'
@@ -134,11 +124,10 @@ def main():
                 message = parse_status(homework)
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
-            logging.error('Сбой при отправке сообщения в телеграм.')
-            print(message)
-        finally:
-            send_message(bot, message)
-            time.sleep(RETRY_PERIOD)
+            logging.error(message)
+        send_message(bot, message)
+        time.sleep(RETRY_PERIOD)
+        timestamp = int(time.time())
 
 
 if __name__ == '__main__':
