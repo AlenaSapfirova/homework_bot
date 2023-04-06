@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import logging
+import json
 
 from dotenv import load_dotenv
 import requests
@@ -65,10 +66,15 @@ def get_api_answer(timestamp):
         if response.status_code == HTTPStatus.OK:
             response = response.json()
             return response
-        else:
-            raise Exception
+        raise ConnectionError(('Ошибка соединения'))
     except requests.RequestException:
-        raise Exception('Ошибка при обращении к внешнему API')
+        raise ConnectionError('Ошибка при обращении к внешнему API')
+    except requests.exceptions.Timeout:
+        raise requests.exceptions.Timeout('Превышено время ожидания')
+    except requests.exceptions.HTTPError:
+        raise requests.exceptions.HTTPError('Ошибка HTTP')
+    except json.JSONDecodeError:
+        raise json.JSONDecodeError('Объект response не является json')
 
 
 def check_response(response):
@@ -79,37 +85,32 @@ def check_response(response):
         raise KeyError('Нет ключа current_date')
     if 'homeworks' not in response:
         raise KeyError('Нет ключа homeworks')
-    else:
-        homeworks = response.get('homeworks')
-        if not isinstance(homeworks, list):
-            raise TypeError('Объект homeworks не список')
-        else:
-            return homeworks
+    homeworks = response.get('homeworks')
+    if not isinstance(homeworks, list):
+        raise TypeError('Объект homeworks не список')
+    return homeworks
 
 
 def parse_status(homework):
     """Извлекаем из ответа сервера нужные данные."""
     if not isinstance(homework, dict):
         raise TypeError('Объект homework не словарь')
-    else:
-        if 'status' not in homework:
-            raise KeyError('Нет ключа "status" в ответе')
-        if 'homework_name' not in homework:
-            raise KeyError('Нет ключа "homework_name" в ответе.')
-        else:
-            homework_status = homework['status']
-            if homework_status not in HOMEWORK_VERDICTS:
-                raise KeyError(f'Неизвестный статус работы {homework_status}')
-            else:
-                verdict = HOMEWORK_VERDICTS[homework_status]
-                homework_name = homework['homework_name']
-                return (f'Изменился статус проверки работы "{homework_name}".'
-                        f'{verdict}')
+    if 'status' not in homework:
+        raise KeyError('Нет ключа "status" в ответе')
+    if 'homework_name' not in homework:
+        raise KeyError('Нет ключа "homework_name" в ответе.')
+    homework_status = homework['status']
+    if homework_status not in HOMEWORK_VERDICTS:
+        raise KeyError(f'Неизвестный статус работы {homework_status}')
+    verdict = HOMEWORK_VERDICTS[homework_status]
+    homework_name = homework['homework_name']
+    return (f'Изменился статус проверки работы "{homework_name}".{verdict}')
 
 
 def main():
     """Основная логика работы бота."""
     if not check_tokens():
+        raise ValueError('Проблемы с токенами')
         sys.exit()
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
@@ -126,8 +127,8 @@ def main():
             message = f'Сбой в работе программы: {error}'
             logging.error(message)
         send_message(bot, message)
-        time.sleep(RETRY_PERIOD)
         timestamp = int(time.time())
+        time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
